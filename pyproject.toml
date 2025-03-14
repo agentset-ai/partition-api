@@ -1,0 +1,16 @@
+[project]
+name = "partition-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi[standard]>=0.115.11",
+  "llama-index>=0.12.24",
+  "llama-index-readers-file>=0.4.6",
+  "modal>=0.73.106",
+  "pydantic>=2.10.6",
+  "python-multipart>=0.0.20",
+  "starlette>=0.46.1",
+  "unstructured[all-docs]>=0.17.0",
+]
