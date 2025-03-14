@@ -43,10 +43,9 @@ async def ingest(
     file: Annotated[UploadFile | None, File()] = None,
     url: Annotated[str | None, Form()] = None,
     filename: Annotated[str | None, Form()] = None,
-    unstructured_args: Annotated[dict, Form()] = {
-        "strategy": "auto",  # fast, hi_res, auto
-        "chunking_strategy": "basic",  # by_title, basic
-    },
+    unstructured_args_json: Annotated[
+        str | None, Form(alias="unstructured_args")
+    ] = None,
     extra_metadata: Annotated[str | None, Form()] = None,
     api_key: Annotated[str | None, Header(alias="api-key")] = None,
 ):
@@ -71,6 +70,22 @@ async def ingest(
                 content={
                     "status": status.HTTP_400_BAD_REQUEST,
                     "message": "extra_metadata must be a valid JSON string",
+                },
+            )
+
+    unstructured_args = {
+        "strategy": "auto",  # fast, hi_res, auto
+        "chunking_strategy": "basic",  # by_title, basic
+    }
+    if unstructured_args_json:
+        try:
+            unstructured_args = json.loads(unstructured_args_json)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "status": status.HTTP_400_BAD_REQUEST,
+                    "message": "unstructured_args must be a valid JSON string",
                 },
             )
 
@@ -134,7 +149,9 @@ async def ingest(
                     },
                 )
 
-        documents = UnstructuredReader().load_data(
+        documents = UnstructuredReader(
+            allowed_metadata_types=(str, int, float, list, dict, type(None)),
+        ).load_data(
             unstructured_kwargs={
                 "file": file_stream,
                 "metadata_filename": filename_to_use,
@@ -157,7 +174,8 @@ async def ingest(
             status_code=status.HTTP_200_OK,
             content={
                 "status": status.HTTP_200_OK,
-                "documents": [document.to_dict() for document in documents],
+                "metadata": documents[0].metadata,
+                "chunks": [document.to_dict() for document in documents],
             },
         )
     except Exception as e:
