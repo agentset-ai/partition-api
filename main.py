@@ -118,11 +118,15 @@ async def ingest(
     from llama_index.readers.file import UnstructuredReader
     import requests
 
+
+    file_stream = None
+
     with tempfile.TemporaryDirectory() as temp_dir:
         if file:
-            file_path = os.path.join(temp_dir, file.filename)
-            with open(file_path, "wb") as f:
-                f.write(await file.read())
+            # file_path = os.path.join(temp_dir, file.filename)
+            # with open(file_path, "wb") as f:
+            #     f.write(await file.read())
+            file_stream = await file.()
         else:
             try:
                 response = requests.get(url)
@@ -141,8 +145,11 @@ async def ingest(
 
         try:
             documents = UnstructuredReader().load_data(
-                file=Path(file_path),
-                unstructured_kwargs=unstructured_args,
+                unstructured_kwargs={
+                    "file": Path(file_path),
+                    "metadata_filename": filename,
+                    **unstructured_args,
+                },
                 split_documents=True,
                 extra_info=metadata,
             )
