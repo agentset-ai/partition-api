@@ -1,10 +1,13 @@
 # modal serve .\main.py
 from typing import Annotated
-
-import modal
+import json
 from fastapi import UploadFile, Form, FastAPI, File, Header, status
 import tempfile
 from starlette.responses import JSONResponse
+
+import modal
+from llama_index.readers.file import UnstructuredReader
+import requests
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -43,13 +46,37 @@ web_app = FastAPI()
 async def ingest(
     file: Annotated[UploadFile | None, File()] = None,
     url: Annotated[str | None, Form()] = None,
+    filename: Annotated[str | None, Form()] = None,
     unstructured_args: Annotated[dict, Form()] = {
         "strategy": "auto",  # fast, hi_res, auto
         "chunking_strategy": "basic",  # by_title, basic
     },
+    extra_metadata: Annotated[str | None, Form()] = None,
     api_key: Annotated[str | None, Header(alias="api-key")] = None,
 ):
     import os
+
+    # Parse extra_metadata if provided
+    metadata = None
+    if extra_metadata:
+        try:
+            metadata = json.loads(extra_metadata)
+            if not isinstance(metadata, dict):
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "status": status.HTTP_400_BAD_REQUEST,
+                        "message": "extra_metadata must be a valid JSON object",
+                    },
+                )
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "status": status.HTTP_400_BAD_REQUEST,
+                    "message": "extra_metadata must be a valid JSON string",
+                },
+            )
 
     if api_key != os.getenv("AGENTSET_API_KEY"):
         return JSONResponse(
@@ -78,6 +105,15 @@ async def ingest(
             },
         )
 
+    if url and not filename:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "status": status.HTTP_400_BAD_REQUEST,
+                "message": "filename is required when providing a URL",
+            },
+        )
+
     from pathlib import Path
     from llama_index.readers.file import UnstructuredReader
     import requests
@@ -91,7 +127,7 @@ async def ingest(
             try:
                 response = requests.get(url)
                 response.raise_for_status()
-                file_path = os.path.join(temp_dir, "downloaded_file")
+                file_path = os.path.join(temp_dir, filename)
                 with open(file_path, "wb") as f:
                     f.write(response.content)
             except Exception as e:
@@ -105,7 +141,10 @@ async def ingest(
 
         try:
             documents = UnstructuredReader().load_data(
-                file=Path(file_path), unstructured_kwargs=unstructured_args
+                file=Path(file_path),
+                unstructured_kwargs=unstructured_args,
+                split_documents=True,
+                extra_info=metadata,
             )
 
             if len(documents) <= 0:
@@ -119,7 +158,10 @@ async def ingest(
 
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
-                content={"status": status.HTTP_200_OK, "documents": documents},
+                content={
+                    "status": status.HTTP_200_OK,
+                    "documents": [document.to_dict() for document in documents],
+                },
             )
         except Exception as e:
             return JSONResponse(
