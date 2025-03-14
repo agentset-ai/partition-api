@@ -2,12 +2,8 @@
 from typing import Annotated
 import json
 from fastapi import UploadFile, Form, FastAPI, File, Header, status
-import tempfile
 from starlette.responses import JSONResponse
-
 import modal
-from llama_index.readers.file import UnstructuredReader
-import requests
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -114,26 +110,21 @@ async def ingest(
             },
         )
 
-    from pathlib import Path
+    from io import BytesIO
     from llama_index.readers.file import UnstructuredReader
     import requests
 
-
     file_stream = None
+    filename_to_use = file.filename if file else filename
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    try:
         if file:
-            # file_path = os.path.join(temp_dir, file.filename)
-            # with open(file_path, "wb") as f:
-            #     f.write(await file.read())
-            file_stream = await file.()
+            file_stream = BytesIO(await file.read())
         else:
             try:
                 response = requests.get(url)
                 response.raise_for_status()
-                file_path = os.path.join(temp_dir, filename)
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                file_stream = BytesIO(response.content)
             except Exception as e:
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -143,41 +134,40 @@ async def ingest(
                     },
                 )
 
-        try:
-            documents = UnstructuredReader().load_data(
-                unstructured_kwargs={
-                    "file": Path(file_path),
-                    "metadata_filename": filename,
-                    **unstructured_args,
-                },
-                split_documents=True,
-                extra_info=metadata,
-            )
+        documents = UnstructuredReader().load_data(
+            unstructured_kwargs={
+                "file": file_stream,
+                "metadata_filename": filename_to_use,
+                **unstructured_args,
+            },
+            split_documents=True,
+            extra_info=metadata,
+        )
 
-            if len(documents) <= 0:
-                return JSONResponse(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    content={
-                        "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        "message": "couldn't parse document",
-                    },
-                )
-
-            return JSONResponse(
-                status_code=status.HTTP_200_OK,
-                content={
-                    "status": status.HTTP_200_OK,
-                    "documents": [document.to_dict() for document in documents],
-                },
-            )
-        except Exception as e:
+        if len(documents) <= 0:
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
                     "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    "message": str(e),
+                    "message": "couldn't parse document",
                 },
             )
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": status.HTTP_200_OK,
+                "documents": [document.to_dict() for document in documents],
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "message": str(e),
+            },
+        )
 
 
 @app.function(timeout=600)  # 10 minutes
