@@ -40,14 +40,14 @@ web_app = FastAPI()
 
 @web_app.post("/ingest")
 async def ingest(
+    api_key: Annotated[str | None, Header(alias="api-key")] = None,
     file: Annotated[UploadFile | None, File()] = None,
     url: Annotated[str | None, Form()] = None,
     filename: Annotated[str | None, Form()] = None,
+    extra_metadata: Annotated[str | None, Form()] = None,
     unstructured_args_json: Annotated[
         str | None, Form(alias="unstructured_args")
     ] = None,
-    extra_metadata: Annotated[str | None, Form()] = None,
-    api_key: Annotated[str | None, Header(alias="api-key")] = None,
 ):
     import os
 
@@ -127,18 +127,22 @@ async def ingest(
 
     from io import BytesIO
     from llama_index.readers.file import UnstructuredReader
+    from unstructured.file_utils.filetype import detect_filetype
     import requests
 
     file_stream = None
     filename_to_use = file.filename if file else filename
+    size_in_bytes = 0
 
     try:
         if file:
+            size_in_bytes = file.size
             file_stream = BytesIO(await file.read())
         else:
             try:
                 response = requests.get(url)
                 response.raise_for_status()
+                size_in_bytes = len(response.content)
                 file_stream = BytesIO(response.content)
             except Exception as e:
                 return JSONResponse(
@@ -149,12 +153,17 @@ async def ingest(
                     },
                 )
 
+        content_type = detect_filetype(
+            file=file_stream,
+            metadata_file_path=filename_to_use,
+        ).mime_type
         documents = UnstructuredReader(
             allowed_metadata_types=(str, int, float, list, dict, type(None)),
         ).load_data(
             unstructured_kwargs={
                 "file": file_stream,
                 "metadata_filename": filename_to_use,
+                "content_type": content_type,
                 **unstructured_args,
             },
             split_documents=True,
@@ -170,12 +179,27 @@ async def ingest(
                 },
             )
 
+        result_documents = []
+        total_characters = 0
+        total_chunks = 0
+        for document in documents:
+            total_chunks += 1
+            result_documents.append(document.to_dict())
+            if document.text:
+                total_characters += len(document.text)
+
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
                 "status": status.HTTP_200_OK,
-                "metadata": documents[0].metadata,
-                "chunks": [document.to_dict() for document in documents],
+                "metadata": {
+                    "filename": filename_to_use,
+                    "filetype": content_type,
+                    "sizeInBytes": size_in_bytes,
+                },
+                "total_characters": total_characters,
+                "total_chunks": total_chunks,
+                "chunks": result_documents,
             },
         )
     except Exception as e:
