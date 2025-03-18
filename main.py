@@ -1,8 +1,8 @@
 # modal serve .\main.py
 from typing import Annotated
-import json
-from fastapi import UploadFile, Form, FastAPI, File, Header, status
+from fastapi import FastAPI, Header, status
 from starlette.responses import JSONResponse
+from pydantic import BaseModel
 import modal
 
 image = (
@@ -38,57 +38,29 @@ app = modal.App(
 web_app = FastAPI()
 
 
+class IngestRequest(BaseModel):
+    url: str | None = None
+    text: str | None = None
+    filename: str
+    extra_metadata: dict | None = None
+    unstructured_args: dict | None = None
+
+
 @web_app.post("/ingest")
 async def ingest(
+    request: IngestRequest,
     api_key: Annotated[str | None, Header(alias="api-key")] = None,
-    file: Annotated[UploadFile | None, File()] = None,
-    url: Annotated[str | None, Form()] = None,
-    text: Annotated[str | None, Form()] = None,
-    filename: Annotated[str | None, Form()] = None,
-    extra_metadata: Annotated[str | None, Form()] = None,
-    unstructured_args_json: Annotated[
-        str | None, Form(alias="unstructured_args")
-    ] = None,
 ):
     import os
 
-    # Parse extra_metadata if provided
-    metadata = None
-    if extra_metadata:
-        try:
-            metadata = json.loads(extra_metadata)
-            if not isinstance(metadata, dict):
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={
-                        "status": status.HTTP_400_BAD_REQUEST,
-                        "message": "extra_metadata must be a valid JSON object",
-                    },
-                )
-        except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "status": status.HTTP_400_BAD_REQUEST,
-                    "message": "extra_metadata must be a valid JSON string",
-                },
-            )
+    metadata = request.extra_metadata
 
     unstructured_args = {
-        "strategy": "auto",  # fast, hi_res, auto
+        "strategy": "auto",  # fast, hi_res, ocr_only, auto
         "chunking_strategy": "basic",  # by_title, basic
     }
-    if unstructured_args_json:
-        try:
-            unstructured_args = json.loads(unstructured_args_json)
-        except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "status": status.HTTP_400_BAD_REQUEST,
-                    "message": "unstructured_args must be a valid JSON string",
-                },
-            )
+    if request.unstructured_args:
+        unstructured_args.update(request.unstructured_args)
 
     if api_key != os.getenv("AGENTSET_API_KEY"):
         return JSONResponse(
@@ -100,14 +72,14 @@ async def ingest(
         )
 
     # Count how many input sources are provided
-    input_sources = sum(1 for x in [file, url, text] if x is not None)
+    input_sources = sum(1 for x in [request.url, request.text] if x is not None)
 
     if input_sources == 0:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "status": status.HTTP_400_BAD_REQUEST,
-                "message": "Either file, url, or text must be provided",
+                "message": "Either url or text must be provided",
             },
         )
 
@@ -116,16 +88,7 @@ async def ingest(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "status": status.HTTP_400_BAD_REQUEST,
-                "message": "Only one of file, url, or text can be provided",
-            },
-        )
-
-    if (url or text) and not filename:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "status": status.HTTP_400_BAD_REQUEST,
-                "message": "filename is required when providing a URL or text",
+                "message": "Only one of url or text can be provided",
             },
         )
 
@@ -135,16 +98,13 @@ async def ingest(
     import requests
 
     file_stream = None
-    filename_to_use = file.filename if file else filename
+    filename_to_use = request.filename
     size_in_bytes = 0
 
     try:
-        if file:
-            size_in_bytes = file.size
-            file_stream = BytesIO(await file.read())
-        elif url:
+        if request.url:
             try:
-                response = requests.get(url)
+                response = requests.get(request.url)
                 response.raise_for_status()
                 size_in_bytes = len(response.content)
                 file_stream = BytesIO(response.content)
@@ -157,7 +117,7 @@ async def ingest(
                     },
                 )
         else:  # text input
-            text_bytes = text.encode("utf-8")
+            text_bytes = request.text.encode("utf-8")
             size_in_bytes = len(text_bytes)
             file_stream = BytesIO(text_bytes)
 
@@ -220,7 +180,7 @@ async def ingest(
         )
 
 
-@app.function(timeout=600)  # 10 minutes
+@app.function(timeout=7200)  # 2 hours
 @modal.asgi_app()
 def partition_api():
     return web_app
