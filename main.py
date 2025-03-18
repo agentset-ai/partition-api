@@ -43,6 +43,7 @@ async def ingest(
     api_key: Annotated[str | None, Header(alias="api-key")] = None,
     file: Annotated[UploadFile | None, File()] = None,
     url: Annotated[str | None, Form()] = None,
+    text: Annotated[str | None, Form()] = None,
     filename: Annotated[str | None, Form()] = None,
     extra_metadata: Annotated[str | None, Form()] = None,
     unstructured_args_json: Annotated[
@@ -98,30 +99,33 @@ async def ingest(
             },
         )
 
-    if not file and not url:
+    # Count how many input sources are provided
+    input_sources = sum(1 for x in [file, url, text] if x is not None)
+
+    if input_sources == 0:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "status": status.HTTP_400_BAD_REQUEST,
-                "message": "Either file or url must be provided",
+                "message": "Either file, url, or text must be provided",
             },
         )
 
-    if file and url:
+    if input_sources > 1:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "status": status.HTTP_400_BAD_REQUEST,
-                "message": "Cannot provide both file and url",
+                "message": "Only one of file, url, or text can be provided",
             },
         )
 
-    if url and not filename:
+    if (url or text) and not filename:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "status": status.HTTP_400_BAD_REQUEST,
-                "message": "filename is required when providing a URL",
+                "message": "filename is required when providing a URL or text",
             },
         )
 
@@ -138,7 +142,7 @@ async def ingest(
         if file:
             size_in_bytes = file.size
             file_stream = BytesIO(await file.read())
-        else:
+        elif url:
             try:
                 response = requests.get(url)
                 response.raise_for_status()
@@ -152,6 +156,10 @@ async def ingest(
                         "message": f"Failed to download file from URL: {str(e)}",
                     },
                 )
+        else:  # text input
+            text_bytes = text.encode("utf-8")
+            size_in_bytes = len(text_bytes)
+            file_stream = BytesIO(text_bytes)
 
         content_type = detect_filetype(
             file=file_stream,
