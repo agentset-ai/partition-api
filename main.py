@@ -17,6 +17,7 @@ image = (
         "python-multipart>=0.0.20",
         "starlette==0.41.2",
         "requests>=2.31.0",
+        "redis>=5.2.1",
     )
     .apt_install(
         "libmagic1",
@@ -44,6 +45,8 @@ class IngestRequest(BaseModel):
     filename: str
     extra_metadata: dict | None = None
     unstructured_args: dict | None = None
+    batch_size: int | None = None
+    # tokenizer_model: str | None = None
 
 
 @web_app.post("/ingest")
@@ -94,8 +97,13 @@ async def ingest(
 
     from io import BytesIO
     from llama_index.readers.file import UnstructuredReader
+
+    # import tiktoken
     from unstructured.file_utils.filetype import detect_filetype
     import requests
+    from redis import Redis
+    import uuid
+    import json
 
     file_stream = None
     filename_to_use = request.filename
@@ -150,25 +158,76 @@ async def ingest(
         result_documents = []
         total_characters = 0
         total_chunks = 0
+        total_pages = None
+
+        final_batch_size = request.batch_size or 5
+        total_batches = 0
+        # Initialize tokenizer from LlamaIndex
+        # total_tokens = 0
+        # tokenizer = tiktoken.encoding_for_model(
+        #     request.tokenizer_model
+        #     if request.tokenizer_model
+        #     else "text-embedding-3-large"
+        # )
+
         for document in documents:
             total_chunks += 1
-            result_documents.append(document.to_dict())
             if document.text:
-                total_characters += len(document.text)
+                text = document.text
+                total_characters += len(text)
+                # total_tokens += len(tokenizer.encode(text))
+            if document.metadata.get("page_number"):
+                total_pages = max(
+                    total_pages if total_pages is not None else 0,
+                    document.metadata.get("page_number"),
+                )
+
+            if (
+                len(result_documents) == 0
+                or len(result_documents[-1]) % final_batch_size == 0
+            ):
+                # Start new batch
+                result_documents.append([document.to_dict()])
+                total_batches += 1
+            else:
+                # Add to current batch
+                result_documents[-1].append(document.to_dict())
+
+        results_id = uuid.uuid4()
+        batch_template = f"results_{results_id}_[BATCH_INDEX]"
+        result = {
+            "status": status.HTTP_200_OK,
+            "metadata": {
+                "filename": filename_to_use,
+                "filetype": content_type,
+                "sizeInBytes": size_in_bytes,
+            },
+            "total_characters": total_characters,
+            "total_chunks": total_chunks,
+            "total_batches": total_batches,
+            "results_id": results_id,
+            "batch_template": batch_template,
+            # "total_tokens": total_tokens,
+        }
+
+        if total_pages is not None:
+            result["total_pages"] = total_pages
+
+        redis_client = Redis(
+            host=os.getenv("REDIS_HOST"),
+            port=os.getenv("REDIS_PORT"),
+            password=os.getenv("REDIS_PASSWORD"),
+            ssl=True,
+        )
+
+        # Store each batch in Redis with the specified key format
+        for batch_idx, batch in enumerate(result_documents):
+            redis_key = batch_template.replace("[BATCH_INDEX]", str(batch_idx))
+            redis_client.set(redis_key, json.dumps(batch))
 
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content={
-                "status": status.HTTP_200_OK,
-                "metadata": {
-                    "filename": filename_to_use,
-                    "filetype": content_type,
-                    "sizeInBytes": size_in_bytes,
-                },
-                "total_characters": total_characters,
-                "total_chunks": total_chunks,
-                "chunks": result_documents,
-            },
+            content=result,
         )
     except Exception as e:
         return JSONResponse(

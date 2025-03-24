@@ -11,6 +11,7 @@ dependencies = [
   "modal>=0.73.106",
   "pydantic>=2.10.6",
   "python-multipart>=0.0.20",
+  "redis>=5.2.1",
   "starlette>=0.46.1",
   "unstructured[all-docs]>=0.17.0",
 ]
