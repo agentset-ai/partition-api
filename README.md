@@ -57,4 +57,4 @@ PARTITION_API_KEY=xxx
 
 ## License
 
-This project is open-source under the MIT License. You can [find it here](https://github.com/agentset-ai/partition-api/blob/main/LICENSE).
+This project is open-source under the MIT License. You can [find it here](https://github.com/agentset-ai/partition-api/blob/main/LICENSE.md).
