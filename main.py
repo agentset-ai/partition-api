@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import modal
 import os
+import time
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -81,13 +82,25 @@ def ingest_operation(request: IngestRequest):
         if request.notify_id is None:
             return res
 
-        requests.post(
-            f"{os.getenv('QSTASH_URL')}/v2/notify/{request.notify_id}",
-            headers={
-                "Authorization": f'Bearer {os.getenv("QSTASH_TOKEN")}',
-            },
-            json=body,
-        )
+        url = f"{os.getenv('QSTASH_URL')}/v2/notify/{request.notify_id}"
+        headers = {
+            "Authorization": f'Bearer {os.getenv("QSTASH_TOKEN")}',
+        }
+
+        while True:
+            r = requests.post(
+                url,
+                headers=headers,
+                json=body,
+            )
+            r.raise_for_status()
+
+            waiters = r.json()
+            if waiters and len(waiters) > 0:
+                break
+
+            time.sleep(60)  # wait for 1 minute before checking again
+
         return res
 
     metadata = request.extra_metadata
